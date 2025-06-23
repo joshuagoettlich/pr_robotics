@@ -1,0 +1,31 @@
+<launch>
+
+  <arg name="paused" default="false"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="gui" default="true"/>
+  <arg name="headless" default="false"/>
+  <arg name="debug" default="false"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="debug" value="$(arg debug)" />
+    <arg name="gui" value="$(arg gui)" />
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="headless" value="$(arg headless)"/>
+  </include>
+
+  <param name="robot_description"
+    command="cat '$(find pr_robotics)/scripts/urdf/robot.urdf'" />
+
+  <rosparam file="$(find pr_robotics)/scripts/urdf/controllers.yaml" command="load"/>
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"
+    respawn="false" output="screen" />
+
+  <node name="controller_spawner" pkg="controller_manager" type="spawner" respawn="false"
+    output="screen" args="joint_state_controller three_link_arm_controller"/>
+
+  <node name="urdf_spawner" pkg="gazebo_ros" type="spawn_model"
+      args="-urdf -model pr_robotics -param robot_description -z 0.0001" />
+
+</launch>

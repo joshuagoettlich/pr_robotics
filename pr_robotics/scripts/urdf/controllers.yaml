@@ -1,0 +1,30 @@
+# ======================= GAZEBO LOW-LEVEL GAINS =======================
+# These gains are for the gazebo_ros_control plugin to simulate the
+# low-level PID controllers for each joint's physics.
+gazebo_ros_control:
+  pid_gains:
+    joint1: {p: 100.0, i: 0.01, d: 10.0}
+    joint2: {p: 100.0, i: 0.01, d: 10.0}
+    joint3: {p: 100.0, i: 0.01, d: 10.0}
+
+
+# ======================= ROS HIGH-LEVEL CONTROLLERS =======================
+
+# Publish all joint states -----------------------------------
+joint_state_controller:
+  type: joint_state_controller/JointStateController
+  publish_rate: 50
+
+# Joint Trajectory Controller -------------------------------
+# This is the high-level controller that our Python script sends goals to.
+three_link_arm_controller:
+  type: "position_controllers/JointTrajectoryController"
+  joints:
+    - joint1
+    - joint2
+    - joint3
+  # The trajectory controller also uses gains.
+  gains:
+    joint1: {p: 100.0, i: 0.01, d: 10.0}
+    joint2: {p: 100.0, i: 0.01, d: 10.0}
+    joint3: {p: 100.0, i: 0.01, d: 10.0}
