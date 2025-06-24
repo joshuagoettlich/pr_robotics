@@ -128,6 +128,7 @@ RUN apt-get update && rosdep install --from-paths src --ignore-src -y || true
 RUN groupadd -r docker && usermod -aG docker root
 
 COPY ./pr_robotics ./src/pr_robotics
+COPY ./pr_robotics_msgs ./src/pr_robotics_msgs
 
 # Try building everything except problematic packages
 RUN /bin/bash -c "source /opt/ros/noetic/setup.bash && \

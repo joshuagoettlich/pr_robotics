@@ -27,6 +27,7 @@ services:
       # Your existing custom volumes
       - /dev:/dev
       - ./pr_robotics:/root/catkin_ws/src/pr_robotics
+      - ./pr_robotics_msgs:/root/catkin_ws/src/pr_robotics_msgs
     devices:
       # Your existing custom device
       - "/dev/ttyUSB0"
