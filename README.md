@@ -1,5 +1,12 @@
 
 docker compose run --rm gui_container bash
+cd src/pr_robotics/scripts
+python3 Kinematics.py
+
+docker exec -it "tab" bash
+roscore
+
+
 # dependencies 
 pip install python-docx
 pip install ezdxf

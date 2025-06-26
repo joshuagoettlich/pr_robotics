@@ -465,6 +465,98 @@ def dxl_units_to_rad(dxl_val, joint_index):
         return rad
 
 
+def solve_ik_with_closest_solution(L1, L1_offset, L2, L2_offset, x, y, current_q_rad):
+    """
+    Solves the inverse kinematics for the 2-DOF arm with dual offsets using the Law of Cosines.
+    
+    This implementation is a Python translation of the robust MATLAB example provided.
+    It calculates both possible elbow solutions and selects the one closest to the
+    current joint configuration to ensure smooth trajectories.
+
+    Args:
+        L1 (float): Length of link 1.
+        L1_offset (float): Perpendicular offset on link 1.
+        L2 (float): Primary length of link 2.
+        L2_offset (float): Perpendicular offset on link 2.
+        x (float): Target x-coordinate in the frame of joint 1.
+        y (float): Target y-coordinate in the frame of joint 1.
+        current_q_rad (tuple[float, float]): A tuple (q1, q2) of the current joint
+                                             angles in radians. Used to select the
+                                             closest valid solution.
+
+    Returns:
+        tuple[float, float] | None: A tuple of (theta1_rad, theta2_rad) if a
+                                     solution is found, otherwise None.
+    """
+    # --- 0. Pre-calculate effective lengths and offset angles (alpha, beta) ---
+    L_eff_1 = math.sqrt(L1**2 + L1_offset**2)
+    alpha = math.atan2(L1_offset, L1)  # Offset angle for Link 1
+
+    L_eff_2 = math.sqrt(L2**2 + L2_offset**2)
+    beta = math.atan2(L2_offset, L2)   # Offset angle for Link 2
+
+    # --- 1. Check Physical Reachability ---
+    D_sq = x**2 + y**2
+    max_reach_sq = (L_eff_1 + L_eff_2)**2
+    min_reach_sq = (L_eff_1 - L_eff_2)**2
+
+    if D_sq > max_reach_sq or D_sq < min_reach_sq:
+        # rospy.logwarn_throttle(5, "IK: Target is physically unreachable.")
+        return None
+
+    # --- 2. Solve for Both Elbow Configurations using Law of Cosines ---
+    # This section calculates the angles (phi1, phi2) for a simplified, non-offset arm.
+    
+    # Use max/min to clamp value due to potential floating point inaccuracies
+    cos_phi2 = max(-1.0, min(1.0, (D_sq - L_eff_1**2 - L_eff_2**2) / (2 * L_eff_1 * L_eff_2)))
+    
+    # Solution 1 (e.g., Elbow Down)
+    phi2_sol1 = math.acos(cos_phi2)
+    phi1_sol1 = math.atan2(y, x) - math.atan2(L_eff_2 * math.sin(phi2_sol1), L_eff_1 + L_eff_2 * math.cos(phi2_sol1))
+    
+    # Solution 2 (e.g., Elbow Up)
+    phi2_sol2 = -math.acos(cos_phi2)
+    phi1_sol2 = math.atan2(y, x) - math.atan2(L_eff_2 * math.sin(phi2_sol2), L_eff_1 + L_eff_2 * math.cos(phi2_sol2))
+
+    # --- 3. Convert simplified angles (phi) back to the real robot angles (q) ---
+    # This is the critical step that accounts for the L-shapes of the links.
+    q1_sol1 = phi1_sol1 - alpha
+    q2_sol1 = phi2_sol1 + alpha - beta  # Note: This is the formula from the MATLAB example
+
+    q1_sol2 = phi1_sol2 - alpha
+    q2_sol2 = phi2_sol2 + alpha - beta
+    
+    # --- 4. Normalize angles to [-pi, pi] for consistent checks ---
+    solutions = [
+        [(q1_sol1 + np.pi) % (2 * np.pi) - np.pi, (q2_sol1 + np.pi) % (2 * np.pi) - np.pi],
+        [(q1_sol2 + np.pi) % (2 * np.pi) - np.pi, (q2_sol2 + np.pi) % (2 * np.pi) - np.pi]
+    ]
+
+    # --- 5. Check Joint Limits ---
+    urdf_limit = np.pi / 2 # Using the limit from your original code
+    
+    valid_solutions = []
+    for q1, q2 in solutions:
+        if (-urdf_limit <= q1 <= urdf_limit) and (-urdf_limit <= q2 <= urdf_limit):
+            valid_solutions.append((q1, q2))
+
+    # --- 6. Select the Best Valid Solution ---
+    if not valid_solutions:
+        # rospy.logwarn_throttle(5, "IK: Target in workspace, but unreachable due to joint limits.")
+        return None
+    
+    if len(valid_solutions) == 1:
+        return valid_solutions[0]
+    
+    # If both solutions are valid, pick the one closer to the current joint configuration
+    dist1_sq = (valid_solutions[0][0] - current_q_rad[0])**2 + (valid_solutions[0][1] - current_q_rad[1])**2
+    dist2_sq = (valid_solutions[1][0] - current_q_rad[0])**2 + (valid_solutions[1][1] - current_q_rad[1])**2
+
+    if dist1_sq <= dist2_sq:
+        return valid_solutions[0]
+    else:
+        return valid_solutions[1]
+    
 
 def ik_2dof_with_dual_offsets_and_limits(L1, L1_offset, L2, L2_offset, x, y):
     """
@@ -562,7 +654,7 @@ class RobotKinematics:
         self.L1_offset = -0.031 # The -31mm offset for L1
         self.L2 = 0.2056
         self.L2_offset = 0.038  # The 38mm x-offset for L2
-        self.joint1_offset_xy = np.array([0.0011, 0.07051])
+        self.joint1_offset_xy =np.array([0.00, 0.0])
         self.current_end_effector_xy_base_frame = np.array([0.0, 0.0])
 
     def get_target_relative_to_joint1(self, target_xy_base_frame):
@@ -658,7 +750,7 @@ if __name__ == "__main__":
         Z_AXIS_ID = 3
         Z_UP_POS_DXL = 3000
         Z_DOWN_PWM = 40
-        DXF_PATH = "./Not_so_much_pain_afterall.dxf"
+        DXF_PATH = "./Linien.dxf"
 
         robot_kinematics = RobotKinematics()
         ros_interface = DynamixelRosInterface(DEVICE_NAME, BAUDRATE, Z_AXIS_ID, Z_UP_POS_DXL, Z_DOWN_PWM)
@@ -680,6 +772,7 @@ if __name__ == "__main__":
         rospy.sleep(3.0)
 
         # --- Main Loop ---
+
         for traj_idx, traj in enumerate(aligned_trajectories):
             if rospy.is_shutdown(): break
             rospy.loginfo(f"--- Starting Trajectory {traj_idx + 1}/{len(aligned_trajectories)} ---")
@@ -688,8 +781,8 @@ if __name__ == "__main__":
 
             start_point_world = traj[0] + robot_kinematics.current_end_effector_xy_base_frame
             start_point_rel_j1 = robot_kinematics.get_target_relative_to_joint1(start_point_world)
-            ik_sol = ik_2dof_with_dual_offsets_and_limits(robot_kinematics.L1,-0.031, robot_kinematics.L2,0.038, start_point_rel_j1[0], start_point_rel_j1[1])
-
+            ik_sol = solve_ik_with_closest_solution(robot_kinematics.L1,-0.031, robot_kinematics.L2,0.038, start_point_rel_j1[0], start_point_rel_j1[1],q_current)
+            print(robot_kinematics.forward_kinematics_2d(ik_sol[0], ik_sol[1]))
             if not ik_sol:
                 rospy.logwarn("IK solution failed for start point. Skipping trajectory."); continue
 
@@ -703,8 +796,10 @@ if __name__ == "__main__":
             for point in traj[1:]:
                 if rospy.is_shutdown(): break
                 point_world = point + robot_kinematics.current_end_effector_xy_base_frame
-                point_rel_j1 = robot_kinematics.get_target_relative_to_joint1(point_world)
-                ik_sol = ik_2dof_with_dual_offsets_and_limits(robot_kinematics.L1, -0.031, robot_kinematics.L2, 0.038, point_rel_j1[0], point_rel_j1[1])
+                print(point_world)
+                point_rel_j1 = point_world
+
+                ik_sol = solve_ik_with_closest_solution(robot_kinematics.L1, -0.031, robot_kinematics.L2, 0.038, point_rel_j1[0], point_rel_j1[1], current_q_rad=ik_sol)
                 if ik_sol:
                     q_dxl = [rad_to_dxl_units(q, i) for i, q in enumerate(ik_sol)]
                     ros_interface.publish_xy_positions_dxl(q_dxl)
