@@ -69,7 +69,7 @@ class DynamixelController:
         self.TORQUE_ENABLE = 1
         self.TORQUE_DISABLE = 0
         self.MOVING_THRESHOLD_POSITION = 10 # Position tolerance for position control
-        self.STOPPED_VELOCITY_THRESHOLD = 5 # Velocity threshold for "stopped" in PWM mode (less relevant now)
+        self.STOPPED_VELOCITY_THRESHOLD = 2 # Velocity threshold for "stopped" in PWM mode (less relevant now)
         self.STOPPED_LOAD_THRESHOLD = 18    # NEW: Load threshold to indicate "reached" in PWM mode
 
         # Operating Modes

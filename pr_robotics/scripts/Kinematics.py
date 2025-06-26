@@ -67,10 +67,14 @@ class DynamixelController:
         self.ADDR_PROFILE_ACCELERATION = 108
         self.ADDR_PROFILE_VELOCITY = 112
 
+        self.ADDR_POSITION_D_GAIN = 80
+        self.ADDR_POSITION_I_GAIN = 82
+        self.ADDR_POSITION_P_GAIN = 84
+
         # Operational Values
         self.TORQUE_ENABLE = 1
         self.TORQUE_DISABLE = 0
-        self.MOVING_THRESHOLD_POSITION = 15
+        self.MOVING_THRESHOLD_POSITION = 1
         self.STOPPED_LOAD_THRESHOLD = 20
 
         # Operating Modes
@@ -111,6 +115,7 @@ class DynamixelController:
                 self.packetHandler.write4ByteTxRx(self.portHandler, dxl_id, self.ADDR_PROFILE_ACCELERATION, 10)
                 self.packetHandler.write4ByteTxRx(self.portHandler, dxl_id, self.ADDR_PROFILE_VELOCITY, 200)
                 self.set_torque_enable(dxl_id, self.TORQUE_ENABLE, locked=True)
+                self.set_pid_gains(dxl_id, 1000, 100, 100, locked=True)  # Example PID gains
             rospy.loginfo("--- Initial setup complete ---")
 
     def _check_comm(self, result, error, context=""):
@@ -127,6 +132,30 @@ class DynamixelController:
         finally:
             if not locked: self.comm_lock.release()
 
+    def set_pid_gains(self, dxl_id, p_gain, i_gain, d_gain, locked=False):
+        """Sets the Position P, I, and D gains for a specific motor."""
+        if not locked: self.comm_lock.acquire()
+        try:
+            # It's good practice to disable torque before changing critical parameters
+            self.set_torque_enable(dxl_id, self.TORQUE_DISABLE, locked=True)
+            
+            # Write P, I, and D gains (Note: These are 2-byte values)
+            result, error = self.packetHandler.write2ByteTxRx(self.portHandler, dxl_id, self.ADDR_POSITION_P_GAIN, p_gain)
+            self._check_comm(result, error, f"Setting P-Gain for ID {dxl_id}")
+            
+            result, error = self.packetHandler.write2ByteTxRx(self.portHandler, dxl_id, self.ADDR_POSITION_I_GAIN, i_gain)
+            self._check_comm(result, error, f"Setting I-Gain for ID {dxl_id}")
+            
+            result, error = self.packetHandler.write2ByteTxRx(self.portHandler, dxl_id, self.ADDR_POSITION_D_GAIN, d_gain)
+            self._check_comm(result, error, f"Setting D-Gain for ID {dxl_id}")
+            
+            self.set_torque_enable(dxl_id, self.TORQUE_ENABLE, locked=True)
+            rospy.loginfo(f"Set PID gains for ID {dxl_id} to P:{p_gain}, I:{i_gain}, D:{d_gain}")
+            
+        finally:
+            if not locked: self.comm_lock.release()
+
+
     def set_operating_mode(self, dxl_id, mode, locked=False):
         if self.current_modes.get(dxl_id) == mode: return
         if not locked: self.comm_lock.acquire()
@@ -135,6 +164,8 @@ class DynamixelController:
             result, error = self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, self.ADDR_OPERATING_MODE, mode)
             self._check_comm(result, error, f"Setting operating mode for ID {dxl_id}")
             if result == COMM_SUCCESS and error == 0: self.current_modes[dxl_id] = mode
+            self.set_pid_gains(dxl_id, 1000, 100, 100, locked=True)  # Example PID gains
+
             self.set_torque_enable(dxl_id, self.TORQUE_ENABLE, locked=True)
         finally:
             if not locked: self.comm_lock.release()
@@ -433,35 +464,133 @@ def dxl_units_to_rad(dxl_val, joint_index):
         if joint_index == 1: rad += (np.pi / 2.0)
         return rad
 
-def ik_2dof_with_limits(L1, L2, x, y):
-    r_squared = x**2 + y**2
-    r = math.sqrt(r_squared)
-    if not (abs(L1 - L2) <= r <= L1 + L2):
-        rospy.logwarn(f"IK: Target ({x:.3f}, {y:.3f}) is unreachable.")
+
+
+def ik_2dof_with_dual_offsets_and_limits(L1, L1_offset, L2, L2_offset, x, y):
+    """
+    Calculates inverse kinematics for a 2-DOF planar arm with fixed perpendicular
+    offsets on both links.
+
+    This function models the arm by finding the intersection of two circles to
+    determine the position of the second joint (the wrist), which accommodates
+    offsets on both links.
+
+    Args:
+        L1 (float): Length of link 1.
+        L1_offset (float): Perpendicular offset on link 1. The value is -31mm.
+        L2 (float): Primary length of link 2.
+        L2_offset (float): Perpendicular offset on link 2.
+        x (float): Target x-coordinate in the frame of joint 1.
+        y (float): Target y-coordinate in the frame of joint 1.
+
+    Returns:
+        tuple[float, float] | None: A tuple of (theta1_rad, theta2_rad) if a
+                                     solution is found within limits, otherwise None.
+    """
+    # --- 1. Calculate effective lengths and angle offsets for both links ---
+    L_eff_1 = math.sqrt(L1**2 + L1_offset**2)
+    phi_offset_1 = math.atan2(L1_offset, L1)
+
+    L_eff_2 = math.sqrt(L2**2 + L2_offset**2)
+    phi_offset_2 = math.atan2(L2_offset, L2)
+
+    # --- 2. Check for reachability ---
+    # Distance from the origin (joint 1) to the target point (x, y)
+    d = math.sqrt(x**2 + y**2)
+
+    # The arm can't reach if the target is further than the sum of effective lengths
+    # or closer than the difference of effective lengths.
+    if d > L_eff_1 + L_eff_2 or d < abs(L_eff_1 - L_eff_2):
+        rospy.logwarn("IK: Target is out of reachable range.")
         return None
-    cos_theta2 = (r_squared - L1**2 - L2**2) / (2 * L1 * L2)
-    if abs(cos_theta2) > 1.0: return None
-    theta2_rad = math.acos(cos_theta2)
-    phi = math.atan2(y, x)
-    psi = math.acos((r_squared + L1**2 - L2**2) / (2 * L1 * r)) if r > 1e-6 else 0
-    theta1_rad = phi - psi
-    urdf_limit = 1.5
-    if -urdf_limit <= theta1_rad <= urdf_limit and -urdf_limit <= theta2_rad <= urdf_limit:
-        return (theta1_rad, theta2_rad)
+    
+    # --- 3. Solve for the wrist position using circle-circle intersection ---
+    # 'a' is the distance from joint 1 to the midpoint of the two intersection points
+    # 'h' is the distance from that midpoint to each intersection point
+    try:
+        a = (L_eff_1**2 - L_eff_2**2 + d**2) / (2 * d)
+        h = math.sqrt(L_eff_1**2 - a**2)
+    except ValueError:
+        # Catches floating point errors where sqrt argument is slightly negative
+        rospy.logwarn("IK: Cannot compute wrist position (sqrt of negative number).")
+        return None
+
+    # Coordinates of the midpoint P2
+    x2 = x * a / d
+    y2 = y * a / d
+
+    # --- 4. Calculate joint angles for both possible solutions ---
+    # Solution 1 (e.g., "elbow down")
+    wrist_x1 = x2 + h * y / d
+    wrist_y1 = y2 - h * x / d
+    
+    # Solution 2 (e.g., "elbow up")
+    wrist_x2 = x2 - h * y / d
+    wrist_y2 = y2 + h * x / d
+
+    solutions = [(wrist_x1, wrist_y1), (wrist_x2, wrist_y2)]
+    urdf_limit = np.pi / 2
+
+    for wx, wy in solutions:
+        # Global angle of the effective first link
+        theta1_eff = math.atan2(wy, wx)
+        # Correct for the physical link's angle offset
+        theta1_rad = theta1_eff - phi_offset_1
+
+        # Global angle of the effective second link
+        theta2_eff_global = math.atan2(y - wy, x - wx)
+        # Relative angle of the effective second link w.r.t. the effective first link
+        theta2_eff_relative = theta2_eff_global - theta1_eff
+        # Correct for the physical link's angle offset
+        theta2_rad = theta2_eff_relative - phi_offset_2
+        
+        # Normalize angles to be within [-pi, pi] for consistent checks
+        theta1_rad = (theta1_rad + np.pi) % (2 * np.pi) - np.pi
+        theta2_rad = (theta2_rad + np.pi) % (2 * np.pi) - np.pi
+
+        # Check if the calculated angles are within the specified URDF limits
+        if -urdf_limit <= theta1_rad <= urdf_limit and -urdf_limit <= theta2_rad <= urdf_limit:
+            return (theta1_rad, theta2_rad)
+
     rospy.logwarn("IK: No solution found within URDF limits.")
     return None
 
+
 class RobotKinematics:
     def __init__(self):
-        self.L1, self.L2 = 0.230, 0.2056
+        self.L1 = 0.230
+        self.L1_offset = -0.031 # The -31mm offset for L1
+        self.L2 = 0.2056
+        self.L2_offset = 0.038  # The 38mm x-offset for L2
         self.joint1_offset_xy = np.array([0.0011, 0.07051])
         self.current_end_effector_xy_base_frame = np.array([0.0, 0.0])
+
     def get_target_relative_to_joint1(self, target_xy_base_frame):
+        """Translates a target in the base frame to the robot's joint 1 frame."""
         return target_xy_base_frame - self.joint1_offset_xy
+
     def forward_kinematics_2d(self, q1_rad, q2_rad):
-        x_rel = self.L1 * math.cos(q1_rad) + self.L2 * math.cos(q1_rad + q2_rad)
-        y_rel = self.L1 * math.sin(q1_rad) + self.L2 * math.sin(q1_rad + q2_rad)
+        """
+        Calculates end-effector position from joint angles, considering offsets
+        on both links.
+        """
+        # Position of joint 2 (wrist), considering L1 and its offset
+        # This is a 2D rotation of the point (L1, L1_offset) by q1
+        wrist_x = self.L1 * math.cos(q1_rad) - self.L1_offset * math.sin(q1_rad)
+        wrist_y = self.L1 * math.sin(q1_rad) + self.L1_offset * math.cos(q1_rad)
+
+        # Position of end-effector relative to joint 2 (wrist)
+        # This is a 2D rotation of the point (L2, L2_offset) by (q1 + q2)
+        end_eff_rel_x = self.L2 * math.cos(q1_rad + q2_rad) - self.L2_offset * math.sin(q1_rad + q2_rad)
+        end_eff_rel_y = self.L2 * math.sin(q1_rad + q2_rad) + self.L2_offset * math.cos(q1_rad + q2_rad)
+        
+        # Total position in the joint 1 frame is the sum of the two vectors
+        x_rel = wrist_x + end_eff_rel_x
+        y_rel = wrist_y + end_eff_rel_y
+
+        # Add the base offset to get the position in the base frame
         return np.array([x_rel, y_rel]) + self.joint1_offset_xy
+
     def set_initial_end_effector_pos(self, initial_q1, initial_q2):
         self.current_end_effector_xy_base_frame = self.forward_kinematics_2d(initial_q1, initial_q2)
         rospy.loginfo(f"Initial end-effector XY (base frame): {self.current_end_effector_xy_base_frame}")
@@ -559,7 +688,7 @@ if __name__ == "__main__":
 
             start_point_world = traj[0] + robot_kinematics.current_end_effector_xy_base_frame
             start_point_rel_j1 = robot_kinematics.get_target_relative_to_joint1(start_point_world)
-            ik_sol = ik_2dof_with_limits(robot_kinematics.L1, robot_kinematics.L2, start_point_rel_j1[0], start_point_rel_j1[1])
+            ik_sol = ik_2dof_with_dual_offsets_and_limits(robot_kinematics.L1,-0.031, robot_kinematics.L2,0.038, start_point_rel_j1[0], start_point_rel_j1[1])
 
             if not ik_sol:
                 rospy.logwarn("IK solution failed for start point. Skipping trajectory."); continue
@@ -575,7 +704,7 @@ if __name__ == "__main__":
                 if rospy.is_shutdown(): break
                 point_world = point + robot_kinematics.current_end_effector_xy_base_frame
                 point_rel_j1 = robot_kinematics.get_target_relative_to_joint1(point_world)
-                ik_sol = ik_2dof_with_limits(robot_kinematics.L1, robot_kinematics.L2, point_rel_j1[0], point_rel_j1[1])
+                ik_sol = ik_2dof_with_dual_offsets_and_limits(robot_kinematics.L1, -0.031, robot_kinematics.L2, 0.038, point_rel_j1[0], point_rel_j1[1])
                 if ik_sol:
                     q_dxl = [rad_to_dxl_units(q, i) for i, q in enumerate(ik_sol)]
                     ros_interface.publish_xy_positions_dxl(q_dxl)
