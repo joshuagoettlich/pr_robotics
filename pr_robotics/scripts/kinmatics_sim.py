@@ -22,7 +22,7 @@ def move_robot_with_fk():
     rospy.loginfo("--- Calculating Forward Kinematics ---")
 
     # Define the target joint angles we want to find the position for
-    target_angles = np.array([1, -1.0, 0.2])
+    target_angles = np.array([0, 0, 0.1])
 
     try:
         # Find and load the robot's URDF model robustly
