@@ -209,13 +209,13 @@ def ik_2dof_with_dual_offsets_and_limits(L1, L1_offset, L2, L2_offset, x, y):
     rospy.logwarn("IK: No solution found within URDF limits.")
     return None
 
-self.L2 =0.038 
-        self.L2_offset =  0.2056 # The 38mm x-offset for L2
+
 class RobotKinematics:
     def __init__(self):
         self.L1 = 0.230
         self.L1_offset = -0.031 # The -31mm offset for L1
-        
+        self.L2 =0.038 
+        self.L2_offset =  0.2056 # The 38mm x-offset for L2
         self.joint1_offset_xy =np.array([0.00, 0.0])
         self.current_end_effector_xy_base_frame = np.array([0.0, 0.0])
 
