@@ -17,15 +17,3 @@ Simulation:
   docker exec -it "tab"
   cd src/pr_robotics/scripts
   python3  sim_ik_easy.py
-
-
-# dependencies 
-pip install python-docx
-pip install ezdxf
-pip install comtypes pillow 
-
-
-
-
-# for Linux 
-sudo apt-get install python3-tk
